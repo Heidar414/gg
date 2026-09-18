@@ -27,11 +27,9 @@ jobs:
           MEGA_EMAIL: ${{ secrets.MEGA_EMAIL }}
           MEGA_PASSWORD: ${{ secrets.MEGA_PASSWORD }}
         run: |
-          # ایجاد پوشه کاربری روی دسکتاپ
           $folder = "C:\Users\CynetAdmin\Desktop\MyFiles"
           New-Item -ItemType Directory -Path $folder -Force
 
-          # دانلود و پیکربندی ابزار همگام‌سازی ابری Rclone
           Invoke-WebRequest "https://downloads.rclone.org/rclone-current-windows-amd64.zip" -OutFile "C:\rclone.zip"
           Expand-Archive -Path "C:\rclone.zip" -DestinationPath "C:\rclone_temp"
           $rcloneDir = Get-ChildItem "C:\rclone_temp" | Where-Object { $_.PSIsContainer } | Select-Object -First 1
@@ -40,12 +38,8 @@ jobs:
           if ($env:MEGA_EMAIL -and $env:MEGA_PASSWORD) {
             $configPath = "$env:APPDATA\rclone\rclone.conf"
             New-Item -ItemType File -Path $configPath -Force
-            @"
-[mycloud]
-type = mega
-user = $env:MEGA_EMAIL
-pass = $(& C:\rclone\rclone.exe obscure $env:MEGA_PASSWORD)
-"@ | Set-Content -Path $configPath
+            $encPass = & C:\rclone\rclone.exe obscure $env:MEGA_PASSWORD
+            "[mycloud]`ntype = mega`nuser = $env:MEGA_EMAIL`npass = $encPass" \vert{} Set-Content -Path $configPath
 
             Write-Host "Restoring files from cloud backup..." -ForegroundColor Cyan
             & C:\rclone\rclone.exe copy "mycloud:ServerBackup" "C:\Users\CynetAdmin\Desktop\MyFiles" --create-empty-src-dirs
@@ -61,7 +55,6 @@ pass = $(& C:\rclone\rclone.exe obscure $env:MEGA_PASSWORD)
           Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
 
           Start-Sleep -Seconds 5
-          # نام ثابت دستگاه را win-station گذاشتیم
           & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="win-station"
 
           Start-Sleep -Seconds 8
@@ -79,13 +72,12 @@ pass = $(& C:\rclone\rclone.exe obscure $env:MEGA_PASSWORD)
 
       - name: 5. Keep Alive & Background Sync (350 Minutes)
         run: |
-          $syncIntervalMinutes = 10
-          $totalMinutes = 350
+          $syncIntervalMinutes = 10$totalMinutes = 350
 
           for ($i = 1; $i -le $totalMinutes; $i++) {
             Start-Sleep -Seconds 60
 
-            if ($i % $syncIntervalMinutes -eq 0) {
+            if ($i \%$syncIntervalMinutes -eq 0) {
               if (Test-Path "C:\rclone\rclone.exe") {
                 & C:\rclone\rclone.exe sync "C:\Users\CynetAdmin\Desktop\MyFiles" "mycloud:ServerBackup" --fast-list
               }
@@ -116,5 +108,4 @@ pass = $(& C:\rclone\rclone.exe obscure $env:MEGA_PASSWORD)
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           Write-Host "Queueing next run..." -ForegroundColor Cyan
-          # نام فایل yml را مطابق با نامی که در گیت‌هاب ذخیره کردید وارد کنید:
-          gh workflow run "build-env.yml" --ref main
+          gh workflow run "windows-rdp.yml" --ref main
