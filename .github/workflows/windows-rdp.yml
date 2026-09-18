@@ -1,4 +1,3 @@
-
 name: Windows Cloud RDP
 
 on:
@@ -27,17 +26,13 @@ jobs:
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          # Download and install Tailscale silently
           Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
           Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
           
-          # Connect to Tailscale network
           Start-Sleep -Seconds 5
           & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server"
           
           Start-Sleep -Seconds 8
-          
-          # Get Tailscale IP
           $ts_ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
           
           Write-Host ""
@@ -49,9 +44,19 @@ jobs:
           Write-Host "  >> Open mstsc and connect to: $ts_ip" -ForegroundColor Magenta
           Write-Host "==================================================" -ForegroundColor Green
 
-      - name: 4. Keep Server Alive (6 Hours)
+      - name: 4. Keep Server Alive (Up to ~5.8 Hours)
         run: |
-          for ($i = 1; $i -le 360; $i++) {
+          # 350 دقیقه (کمی قبل از لیمیت 360 دقیقه‌ای گیت‌هاب تا مرحله بعدی فرصت اجرا داشته باشد)
+          for ($i = 1; $i -le 350; $i++) {
             Start-Sleep -Seconds 60
-            Write-Host "[$i/360] Server running..."
+            Write-Host "[$i/350] Server running..."
           }
+
+      - name: 5. Auto Re-trigger Next Session
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          Write-Host "Session finishing. Triggering next RDP session..." -ForegroundColor Cyan
+          # نام فایل این ورک‌فلو را در خط زیر وارد کنید (مثلا windows-rdp.yml یا نام فایل شما در پوشه workflows)
+          gh workflow run "windows-rdp.yml" --ref main
