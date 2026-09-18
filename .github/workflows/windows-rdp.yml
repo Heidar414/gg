@@ -39,7 +39,12 @@ jobs:
             $configPath = "$env:APPDATA\rclone\rclone.conf"
             New-Item -ItemType File -Path $configPath -Force
             $encPass = & C:\rclone\rclone.exe obscure $env:MEGA_PASSWORD
-            "[mycloud]`ntype = mega`nuser = $env:MEGA_EMAIL`npass = $encPass" \vert{} Set-Content -Path $configPath
+            
+            # ثبت تنظیمات خط به خط بدون نیاز به کاراکتر پایپ
+            Add-Content -Path $configPath -Value "[mycloud]"
+            Add-Content -Path $configPath -Value "type = mega"
+            Add-Content -Path $configPath -Value "user = $env:MEGA_EMAIL"
+            Add-Content -Path $configPath -Value "pass = $encPass"
 
             Write-Host "Restoring files from cloud backup..." -ForegroundColor Cyan
             & C:\rclone\rclone.exe copy "mycloud:ServerBackup" "C:\Users\CynetAdmin\Desktop\MyFiles" --create-empty-src-dirs
@@ -72,12 +77,13 @@ jobs:
 
       - name: 5. Keep Alive & Background Sync (350 Minutes)
         run: |
-          $syncIntervalMinutes = 10$totalMinutes = 350
+          $syncIntervalMinutes = 10
+          $totalMinutes = 350
 
           for ($i = 1; $i -le $totalMinutes; $i++) {
             Start-Sleep -Seconds 60
 
-            if ($i \%$syncIntervalMinutes -eq 0) {
+            if ($i % $syncIntervalMinutes -eq 0) {
               if (Test-Path "C:\rclone\rclone.exe") {
                 & C:\rclone\rclone.exe sync "C:\Users\CynetAdmin\Desktop\MyFiles" "mycloud:ServerBackup" --fast-list
               }
@@ -108,4 +114,4 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           Write-Host "Queueing next run..." -ForegroundColor Cyan
-          gh workflow run "windows-rdp.yml" --ref main
+          gh workflow run "windows-rdp.yml" --repo $env:GITHUB_REPOSITORY --ref main
