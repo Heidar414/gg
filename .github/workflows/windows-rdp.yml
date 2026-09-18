@@ -1,4 +1,4 @@
-name: Windows Build Environment
+name: The New Windows Build Environment
 
 on:
   workflow_dispatch:
@@ -22,37 +22,20 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "CynetAdmin" -ErrorAction SilentlyContinue
           net user runneradmin Cynet@2026
 
-      - name: 3. Setup Persistent Storage & Rclone Backup
-        env:
-          MEGA_EMAIL: ${{ secrets.MEGA_EMAIL }}
-          MEGA_PASSWORD: ${{ secrets.MEGA_PASSWORD }}
+      - name: 3. Create Storage Folder
         run: |
-          $folder = "C:\Users\CynetAdmin\Desktop\MyFiles"
-          New-Item -ItemType Directory -Path $folder -Force
+          New-Item -ItemType Directory -Path "C:\Users\CynetAdmin\Desktop\MyFiles" -Force
 
-          Invoke-WebRequest "https://downloads.rclone.org/rclone-current-windows-amd64.zip" -OutFile "C:\rclone.zip"
-          Expand-Archive -Path "C:\rclone.zip" -DestinationPath "C:\rclone_temp"
-          $rcloneDir = Get-ChildItem "C:\rclone_temp" | Where-Object { $_.PSIsContainer } | Select-Object -First 1
-          Move-Item -Path $rcloneDir.FullName -Destination "C:\rclone"
+      # مرحله بازیابی فایل‌های قبلی با کش پرسرعت گیت‌هاب
+      - name: 4. Restore Cached Files
+        uses: actions/cache/restore@v4
+        with:
+          path: C:\Users\CynetAdmin\Desktop\MyFiles
+          key: storage-${{ github.run_id }}
+          restore-keys: |
+            storage-
 
-          if ($env:MEGA_EMAIL -and $env:MEGA_PASSWORD) {
-            $configPath = "$env:APPDATA\rclone\rclone.conf"
-            New-Item -ItemType File -Path $configPath -Force
-            $encPass = & C:\rclone\rclone.exe obscure $env:MEGA_PASSWORD
-            
-            # ثبت تنظیمات خط به خط بدون نیاز به کاراکتر پایپ
-            Add-Content -Path $configPath -Value "[mycloud]"
-            Add-Content -Path $configPath -Value "type = mega"
-            Add-Content -Path $configPath -Value "user = $env:MEGA_EMAIL"
-            Add-Content -Path $configPath -Value "pass = $encPass"
-
-            Write-Host "Restoring files from cloud backup..." -ForegroundColor Cyan
-            & C:\rclone\rclone.exe copy "mycloud:ServerBackup" "C:\Users\CynetAdmin\Desktop\MyFiles" --create-empty-src-dirs
-          } else {
-            Write-Host "Cloud credentials not set. Files will only be local." -ForegroundColor Yellow
-          }
-
-      - name: 4. Connect Tailscale Network
+      - name: 5. Connect Tailscale Network
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
@@ -72,35 +55,25 @@ jobs:
           Write-Host "  Tailscale IP       : $ts_ip" -ForegroundColor Yellow
           Write-Host "  Username           : CynetAdmin" -ForegroundColor Yellow
           Write-Host "  Password           : Cynet@2026" -ForegroundColor Yellow
-          Write-Host "  Folder to Save     : Desktop\MyFiles" -ForegroundColor Magenta
+          Write-Host "  Storage Folder     : Desktop\MyFiles (Auto-Cached)" -ForegroundColor Magenta
           Write-Host "==================================================" -ForegroundColor Green
 
-      - name: 5. Keep Alive & Background Sync (350 Minutes)
+      - name: 6. Keep Alive (350 Minutes)
         run: |
-          $syncIntervalMinutes = 10
-          $totalMinutes = 350
-
-          for ($i = 1; $i -le $totalMinutes; $i++) {
+          for ($i = 1; $i -le 350; $i++) {
             Start-Sleep -Seconds 60
-
-            if ($i % $syncIntervalMinutes -eq 0) {
-              if (Test-Path "C:\rclone\rclone.exe") {
-                & C:\rclone\rclone.exe sync "C:\Users\CynetAdmin\Desktop\MyFiles" "mycloud:ServerBackup" --fast-list
-              }
-            } else {
-              Write-Host "[$i/$totalMinutes] Environment active..."
-            }
+            Write-Host "[$i/350] Server running..."
           }
 
-      - name: 6. Final Cloud Backup
+      # ذخیره خودکار فایل‌های جدید در کش گیت‌هاب قبل از خاموشی
+      - name: 7. Save Files to Cache
         if: always()
-        run: |
-          Write-Host "Syncing final files before shutdown..." -ForegroundColor Cyan
-          if (Test-Path "C:\rclone\rclone.exe") {
-            & C:\rclone\rclone.exe sync "C:\Users\CynetAdmin\Desktop\MyFiles" "mycloud:ServerBackup" --fast-list
-          }
+        uses: actions/cache/save@v4
+        with:
+          path: C:\Users\CynetAdmin\Desktop\MyFiles
+          key: storage-${{ github.run_id }}
 
-      - name: 7. Immediate Tailscale Logout (Free Hostname)
+      - name: 8. Immediate Tailscale Logout
         if: always()
         run: |
           Write-Host "Releasing Tailscale hostname..." -ForegroundColor Yellow
@@ -108,8 +81,8 @@ jobs:
             & "C:\Program Files\Tailscale\tailscale.exe" logout
           }
 
-      - name: 8. Trigger Next Run (Auto-Restart)
-        if: always()
+      - name: 9. Trigger Next Run (Auto-Restart)
+        if: success()
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
