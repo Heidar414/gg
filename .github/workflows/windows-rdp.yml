@@ -1,7 +1,11 @@
-name: The New Windows Build Environment
+name: The New New Windows Build Environment
 
 on:
   workflow_dispatch:
+
+concurrency:
+  group: rdp-environment
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -22,18 +26,40 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "CynetAdmin" -ErrorAction SilentlyContinue
           net user runneradmin Cynet@2026
 
-      - name: 3. Create Storage Folder
+      # دانلود و راه‌اندازی سریع Rclone با اکانت 5 ترابایتی گوگل
+      - name: 3. Setup Google Drive Storage
+        env:
+          RCLONE_CONF_B64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
         run: |
-          New-Item -ItemType Directory -Path "C:\Users\CynetAdmin\Desktop\MyFiles" -Force
+          Invoke-WebRequest "https://downloads.rclone.org/rclone-current-windows-amd64.zip" -OutFile "C:\rclone.zip"
+          Expand-Archive -Path "C:\rclone.zip" -DestinationPath "C:\rclone_temp"
+          $rcloneDir = Get-ChildItem "C:\rclone_temp" | Where-Object { $_.PSIsContainer } | Select-Object -First 1
+          Move-Item -Path $rcloneDir.FullName -Destination "C:\rclone"
 
-      # مرحله بازیابی فایل‌های قبلی با کش پرسرعت گیت‌هاب
-      - name: 4. Restore Cached Files
-        uses: actions/cache/restore@v4
-        with:
-          path: C:\Users\CynetAdmin\Desktop\MyFiles
-          key: storage-${{ github.run_id }}
-          restore-keys: |
-            storage-
+          $confPath = "$env:APPDATA\rclone\rclone.conf"
+          New-Item -ItemType File -Path $confPath -Force
+          [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($env:RCLONE_CONF_B64)) | Set-Content -Path $confPath
+
+      # بازگردانی هویت کاربر (دسکتاپ، لاگین‌های مرورگر، برنامه‌ها و رجیستری)
+      - name: 4. Restore User State from Google Drive
+        run: |
+          Write-Host "Restoring user session, desktop, and app logins..." -ForegroundColor Cyan
+          $userProfile = "C:\Users\CynetAdmin"
+          New-Item -ItemType Directory -Path "$userProfile\Desktop" -Force
+          New-Item -ItemType Directory -Path "$userProfile\Downloads" -Force
+
+          # دانلود بسته وضعیت کاربر از گوگل درایو در صورت وجود
+          & C:\rclone\rclone.exe copy "gdrive:RDP_State/user_state.zip" "C:\temp_state" --drive-chunk-size 64M
+          
+          if (Test-Path "C:\temp_state\user_state.zip") {
+            Expand-Archive -Path "C:\temp_state\user_state.zip" -DestinationPath $userProfile -Force
+            Remove-Item "C:\temp_state\user_state.zip" -Force
+            
+            # بازگردانی تنظیمات رجیستری کاربر
+            if (Test-Path "$userProfile\user_registry.reg") {
+              reg import "$userProfile\user_registry.reg"
+            }
+          }
 
       - name: 5. Connect Tailscale Network
         env:
@@ -50,28 +76,55 @@ jobs:
 
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Green
-          Write-Host "  >>> SERVER IS READY <<<" -ForegroundColor Cyan
-          Write-Host "  Tailscale Hostname : win-station" -ForegroundColor Yellow
+          Write-Host "  >>> SERVER IS READY FOR USER <<<" -ForegroundColor Cyan
+          Write-Host "  Connect Hostname   : win-station" -ForegroundColor Yellow
           Write-Host "  Tailscale IP       : $ts_ip" -ForegroundColor Yellow
-          Write-Host "  Username           : CynetAdmin" -ForegroundColor Yellow
-          Write-Host "  Password           : Cynet@2026" -ForegroundColor Yellow
-          Write-Host "  Storage Folder     : Desktop\MyFiles (Auto-Cached)" -ForegroundColor Magenta
+          Write-Host "  Desktop & Logins   : Fully Persistent & Synced" -ForegroundColor Magenta
           Write-Host "==================================================" -ForegroundColor Green
 
-      - name: 6. Keep Alive (350 Minutes)
+      # اجرای سیستم ناظر همگام‌سازی دوره‌ای در پس‌زمینه (هر ۱۵ دقیقه)
+      - name: 6. Keep Alive & Continuous Delta Sync (350 Minutes)
         run: |
-          for ($i = 1; $i -le 350; $i++) {
+          $userProfile = "C:\Users\CynetAdmin"
+          $syncMinutes = 15
+          $totalMinutes = 350
+
+          for ($i = 1; $i -le $totalMinutes; $i++) {
             Start-Sleep -Seconds 60
-            Write-Host "[$i/350] Server running..."
+
+            # هر 15 دقیقه، تغییرات دسکتاپ و دیتای نرم‌افزارها را به صورت سایلنت به گوگل درایو می‌فرستد
+            if ($i % $syncMinutes -eq 0) {
+              Write-Host "[$i/$totalMinutes] Running periodic silent sync to Google Drive..." -ForegroundColor Magenta
+              reg export "HKCU" "$userProfile\user_registry.reg" /y
+              
+              # ساخت بسته سریع بدون کش‌های موقت
+              Compress-Archive -Path "$userProfile\Desktop", "$userProfile\Downloads", "$userProfile\AppData\Roaming", "$userProfile\AppData\Local\Google\Chrome\User Data", "$userProfile\user_registry.reg" -DestinationPath "C:\live_state.zip" -Force -ErrorAction SilentlyContinue
+              if (Test-Path "C:\live_state.zip") {
+                & C:\rclone\rclone.exe copy "C:\live_state.zip" "gdrive:RDP_State" --drive-chunk-size 64M
+                Move-Item "C:\live_state.zip" "$userProfile\last_sync.zip" -Force
+              }
+            } else {
+              Write-Host "[$i/$totalMinutes] Server running..."
+            }
           }
 
-      # ذخیره خودکار فایل‌های جدید در کش گیت‌هاب قبل از خاموشی
-      - name: 7. Save Files to Cache
+      # بکاپ نهایی و قطعی در لحظه خروج یا خاموشی
+      - name: 7. Final State Backup to Google Drive
         if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: C:\Users\CynetAdmin\Desktop\MyFiles
-          key: storage-${{ github.run_id }}
+        run: |
+          Write-Host "Triggering final emergency shutdown backup..." -ForegroundColor Cyan
+          $userProfile = "C:\Users\CynetAdmin"
+          
+          # ذخیره رجیستری
+          reg export "HKCU" "$userProfile\user_registry.reg" /y
+          
+          # فشرده‌سازی فایل‌های جدید کاربر
+          Compress-Archive -Path "$userProfile\Desktop", "$userProfile\Downloads", "$userProfile\AppData\Roaming", "$userProfile\AppData\Local\Google\Chrome\User Data", "$userProfile\user_registry.reg" -DestinationPath "C:\user_state.zip" -Force -ErrorAction SilentlyContinue
+          
+          if (Test-Path "C:\user_state.zip") {
+            & C:\rclone\rclone.exe copy "C:\user_state.zip" "gdrive:RDP_State" --drive-chunk-size 64M
+            Write-Host "Final state successfully committed to 5TB Google Drive." -ForegroundColor Green
+          }
 
       - name: 8. Immediate Tailscale Logout
         if: always()
@@ -86,5 +139,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          Write-Host "Queueing next run..." -ForegroundColor Cyan
+          Write-Host "Queueing next seamless run..." -ForegroundColor Cyan
           gh workflow run "windows-rdp.yml" --repo $env:GITHUB_REPOSITORY --ref main
