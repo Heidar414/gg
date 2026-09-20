@@ -113,7 +113,7 @@ jobs:
           $LASTEXITCODE = 0
           Write-Host "Restoration completed." -ForegroundColor Green
 
-      # ۶. اجرای خودکار فعالیت‌ها و برنامه‌ها بلافاصله پس از بازیابی (بدون نیاز به in)
+      # ۶. اجرای خودکار فعالیت‌ها و برنامه‌ها بلافاصله پس از بازیابی
       - name: 6. Trigger Auto-Resume Activities
         run: |
           Write-Host "Checking for persistent activities in AutoRun..." -ForegroundColor Cyan
@@ -155,16 +155,17 @@ jobs:
           Write-Host "  👉 Auto-Resume   : Active (C:\AutoRun)" -ForegroundColor Cyan
           Write-Host "=================================================================" -ForegroundColor Green
 
-      # ۸. همگام‌سازی دوره‌ای در پس‌زمینه (هر ۳ دقیقه)
+      # ۸. همگام‌سازی دوره‌ای در پس‌زمینه (هر ۳ دقیقه یک‌بار با شمارنده مطمئن)
       - name: 8. Keep Alive & Periodic Background Sync (350 Minutes)
         run: |
           $globalConf = "C:\rclone\rclone.conf"
-          $syncMinutes = 3$totalMinutes = 350
+          $counter = 0$totalMinutes = 350
 
           for ($i = 1; $i -le $totalMinutes; $i++) {
             Start-Sleep -Seconds 60
+            $counter++
 
-            if ($i \%$syncMinutes -eq 0) {
+            if ($counter -ge 3) {$counter = 0
               Write-Host "[$i/$totalMinutes] Auto-syncing files and tasks to Google Drive..." -ForegroundColor Magenta
 
               Get-ChildItem -Path "C:\Users" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
