@@ -43,7 +43,7 @@ jobs:
           Write-Host "Verifying Google Drive connection..." -ForegroundColor Cyan
           & C:\rclone\rclone.exe about gdrive:
 
-      # مرحله ۴ اصلاح‌شده (بدون ارور در صورت نبود فایل قبلی)
+      # مرحله ۴: بازیابی کامل داده‌های کاربر
       - name: 4. Restore Full User State
         run: |
           Write-Host "Checking for previous session in Google Drive..." -ForegroundColor Cyan
@@ -53,7 +53,6 @@ jobs:
           New-Item -ItemType Directory -Path "$userProfile\Documents" -Force
           New-Item -ItemType Directory -Path "C:\MyFiles" -Force
 
-          # بررسی وجود فایل در گوگل درایو قبل از دانلود
           $remoteFile = & C:\rclone\rclone.exe lsf "gdrive:RDP_State/user_state.zip" 2>$null
           $LASTEXITCODE = 0
 
@@ -76,44 +75,35 @@ jobs:
           }
           $LASTEXITCODE = 0
 
-      # مرحله ۵: اتصال تیل‌اسکیل + فعال‌سازی کامل روتینگ و NAT ویندوز برای Exit Node
-      - name: 5. Connect Tailscale Network & Enable Exit Node with Full NAT
+      # مرحله ۵: راه‌اندازی تونل با پورت کاملاً ثابت Bore + Tailscale
+      - name: 5. Connect Permanent Bore Tunnel & Tailscale
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
+          # ۱. دانلود باینری پرسرعت Bore
+          Write-Host "Setting up Permanent Bore Tunnel..." -ForegroundColor Cyan
+          New-Item -ItemType Directory -Path "C:\bore" -Force
+          Invoke-WebRequest "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-pc-windows-msvc.zip" -OutFile "C:\bore\bore.zip"
+          Expand-Archive -Path "C:\bore\bore.zip" -DestinationPath "C:\bore" -Force
+          
+          # اجرای تونل روی پورت دائمی ۳۸۹۲۶ در پس‌زمینه
+          Start-Process -FilePath "C:\bore\bore.exe" -ArgumentList "local 3389 --to bore.pub --port 38926" -WorkingDirectory "C:\bore"
+
+          # ۲. اتصال تیل‌اسکیل (به عنوان گزینه دوم)
           Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
           Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
-
           Start-Sleep -Seconds 5
-
-          # ۱. فعال‌سازی روتینگ IP در رجیستری و سرویس RemoteAccess
-          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name "IPEnableRouter" -Value 1
-          Set-Service -Name RemoteAccess -StartupType Automatic -ErrorAction SilentlyContinue
-          Start-Service RemoteAccess -ErrorAction SilentlyContinue
-
-          # ۲. فعال‌سازی قابلیت Forwarding روی کارت‌های شبکه
-          Set-NetIPInterface -Forwarding Enabled -ErrorAction SilentlyContinue
-
-          # ۳. راه‌اندازی شبکه NAT برای ترجمه آدرس‌های تیل‌اسکیل و عبور از فایروال آژور
-          Get-NetNat | Remove-NetNat -Confirm:$false -ErrorAction SilentlyContinue
-          New-NetNat -Name "TailscaleNAT" -InternalIPInterfaceAddressPrefix "100.64.0.0/10" -ErrorAction SilentlyContinue
-
-          # ۴. اتصال تیل‌اسکیل و معرفی به عنوان Exit Node
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="win-station" --advertise-exit-node --unattended
-
-          Start-Sleep -Seconds 8
-          $ts_ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="win-station" --unattended
 
           Write-Host ""
-          Write-Host "==================================================" -ForegroundColor Green
-          Write-Host "  >>> SEAMLESS RDP & ROUTED EXIT NODE IS READY <<<" -ForegroundColor Cyan
-          Write-Host "  Tailscale Hostname : win-station" -ForegroundColor Yellow
-          Write-Host "  Tailscale IP       : $ts_ip" -ForegroundColor Yellow
-          Write-Host "  NAT & Forwarding   : Configured (100.64.0.0/10)" -ForegroundColor Magenta
-          Write-Host "  State Syncing      : Active & Continuous" -ForegroundColor Magenta
-          Write-Host "==================================================" -ForegroundColor Green
+          Write-Host "=================================================================" -ForegroundColor Green
+          Write-Host "  >>> 100% PERMANENT & STATIC RDP IS READY <<<" -ForegroundColor Cyan
+          Write-Host "  👉 Fixed Address : bore.pub:38926" -ForegroundColor Yellow
+          Write-Host "  👉 Username      : CynetAdmin" -ForegroundColor Yellow
+          Write-Host "  👉 Password      : Cynet@2026" -ForegroundColor Yellow
+          Write-Host "=================================================================" -ForegroundColor Green
 
-      # سیستم ناظر خودکار در پس‌زمینه (هر ۱۵ دقیقه تغییرات را آرام ذخیره می‌کند)
+      # سیستم ناظر خودکار در پس‌زمینه (هر ۱۵ دقیقه تغییرات را ذخیره می‌کند)
       - name: 6. Keep Alive & Periodic Background Sync (350 Minutes)
         run: |
           $userProfile = "C:\Users\CynetAdmin"
@@ -182,7 +172,7 @@ jobs:
             & "C:\Program Files\Tailscale\tailscale.exe" logout
           }
 
-      # راه‌اندازی مجدد در صورت اتمام یا خطا
+      # راه‌اندازی مجدد خودکار در پایان سشن
       - name: 9. Trigger Next Run (Auto-Restart)
         if: success() || failure()
         env:
