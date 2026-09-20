@@ -43,32 +43,38 @@ jobs:
           Write-Host "Verifying Google Drive connection..." -ForegroundColor Cyan
           & C:\rclone\rclone.exe about gdrive:
 
-      # بازگردانی دقیق فایل‌ها، لاگین‌های مرورگر، برنامه‌ها و رجیستری
+      # مرحله ۴ اصلاح‌شده (بدون ارور در صورت نبود فایل قبلی)
       - name: 4. Restore Full User State
         run: |
-          Write-Host "Restoring user session, desktop, apps, and registry..." -ForegroundColor Cyan
+          Write-Host "Checking for previous session in Google Drive..." -ForegroundColor Cyan
           $userProfile = "C:\Users\CynetAdmin"
           New-Item -ItemType Directory -Path "$userProfile\Desktop" -Force
           New-Item -ItemType Directory -Path "$userProfile\Downloads" -Force
           New-Item -ItemType Directory -Path "$userProfile\Documents" -Force
           New-Item -ItemType Directory -Path "C:\MyFiles" -Force
 
-          # دانلود بسته وضعیت کاربر از گوگل درایو در صورت وجود
-          & C:\rclone\rclone.exe copy "gdrive:RDP_State/user_state.zip" "C:\backup_temp" --drive-chunk-size 64M
-          
-          if (Test-Path "C:\backup_temp\user_state.zip") {
-            Write-Host "Extracting previous state into user profile..." -ForegroundColor Green
-            Expand-Archive -Path "C:\backup_temp\user_state.zip" -DestinationPath $userProfile -Force
-            Remove-Item "C:\backup_temp\user_state.zip" -Force
+          # بررسی وجود فایل در گوگل درایو قبل از دانلود
+          $remoteFile = & C:\rclone\rclone.exe lsf "gdrive:RDP_State/user_state.zip" 2>$null
+          $LASTEXITCODE = 0
+
+          if ($remoteFile) {
+            Write-Host "Downloading user state from Google Drive..." -ForegroundColor Green
+            & C:\rclone\rclone.exe copy "gdrive:RDP_State/user_state.zip" "C:\backup_temp" --drive-chunk-size 64M
             
-            # بازگردانی کلیدهای شخصی رجیستری
-            if (Test-Path "$userProfile\user_settings.reg") {
-              Write-Host "Importing user registry settings..." -ForegroundColor Green
-              reg import "$userProfile\user_settings.reg"
+            if (Test-Path "C:\backup_temp\user_state.zip") {
+              Write-Host "Restoring user profile..." -ForegroundColor Green
+              Expand-Archive -Path "C:\backup_temp\user_state.zip" -DestinationPath $userProfile -Force
+              Remove-Item "C:\backup_temp\user_state.zip" -Force
+              
+              if (Test-Path "$userProfile\user_settings.reg") {
+                Write-Host "Importing user registry settings..." -ForegroundColor Green
+                reg import "$userProfile\user_settings.reg"
+              }
             }
           } else {
-            Write-Host "No previous state found. Starting fresh user session." -ForegroundColor Yellow
+            Write-Host "First-time launch: No previous backup found. Starting fresh session." -ForegroundColor Yellow
           }
+          $LASTEXITCODE = 0
 
       - name: 5. Connect Tailscale Network
         env:
@@ -101,7 +107,6 @@ jobs:
           for ($i = 1; $i -le $totalMinutes; $i++) {
             Start-Sleep -Seconds 60
 
-            # هر ۱۵ دقیقه یک بکاپ کم‌حجم از آخرین تغییرات می‌گیرد
             if ($i % $syncMinutes -eq 0) {
               Write-Host "[$i/$totalMinutes] Running periodic delta sync to Google Drive..." -ForegroundColor Magenta
               reg export "HKCU" "$userProfile\user_settings.reg" /y
@@ -161,7 +166,7 @@ jobs:
             & "C:\Program Files\Tailscale\tailscale.exe" logout
           }
 
-      # این مرحله اصلاح شد: هم در صورت پایان عادی و هم در صورت قطعی ناشی از خطا، سرور بعدی روشن می‌شود
+      # راه‌اندازی مجدد در صورت اتمام یا خطا
       - name: 9. Trigger Next Run (Auto-Restart)
         if: success() || failure()
         env:
