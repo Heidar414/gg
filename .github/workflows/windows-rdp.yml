@@ -33,7 +33,7 @@ jobs:
           icacls "C:\Users\Public\Desktop" /grant "Everyone:(OI)(CI)F" /T /Q | Out-Null
           icacls "C:\AutoRun" /grant "Everyone:(OI)(CI)F" /T /Q | Out-Null
 
-      # ۳. دانلود و راه‌اندازی Rclone (نسخه ساده و بدون کاراکترهای خطاانداز)
+      # ۳. دانلود و راه‌اندازی Rclone
       - name: 3. Initialize Global Google Drive Storage
         env:
           RCLONE_CONF_B64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
@@ -113,7 +113,7 @@ jobs:
           $LASTEXITCODE = 0
           Write-Host "Restoration completed." -ForegroundColor Green
 
-      # ۶. اجرای خودکار فعالیت‌ها و برنامه‌ها بلافاصله پس از بازیابی
+      # ۶. اجرای خودکار فعالیت‌ها و برنامه‌ها بلافاصله پس از بازیابی (بدون نیاز به in)
       - name: 6. Trigger Auto-Resume Activities
         run: |
           Write-Host "Checking for persistent activities in AutoRun..." -ForegroundColor Cyan
@@ -122,10 +122,9 @@ jobs:
             Start-Process -FilePath "cmd.exe" -ArgumentList "/c C:\AutoRun\run_activity.bat >> C:\AutoRun\activity.log 2>&1" -WorkingDirectory "C:\AutoRun"
           }
 
-          $pythonScripts = Get-ChildItem -Path "C:\AutoRun" -Filter "*.py" -ErrorAction SilentlyContinue
-          foreach ($script in$pythonScripts) {
-            Write-Host "Starting Python task: $($script.Name)" -ForegroundColor Green
-            Start-Process -FilePath "python.exe" -ArgumentList "`"$($script.FullName)`"" -WorkingDirectory "C:\AutoRun"
+          Get-ChildItem -Path "C:\AutoRun" -Filter "*.py" -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "Starting Python task: $($_.Name)" -ForegroundColor Green
+            Start-Process -FilePath "python.exe" -ArgumentList "`"$($_.FullName)`"" -WorkingDirectory "C:\AutoRun"
           }
 
       # ۷. راه‌اندازی تونل ثابت Bore + تیل‌اسکیل (اختیاری)
@@ -168,11 +167,11 @@ jobs:
             if ($i \%$syncMinutes -eq 0) {
               Write-Host "[$i/$totalMinutes] Auto-syncing files and tasks to Google Drive..." -ForegroundColor Magenta
 
-              $userDirs = Get-ChildItem -Path "C:\Users" -Directory -ErrorAction SilentlyContinue
-              foreach ($u in$userDirs) {
-                if ($u.Name -ne "Default" -and $u.Name -ne "All Users") {
-                  if (Test-Path "$($u.FullName)\Desktop") {
-                    & C:\rclone\rclone.exe --config $globalConf copy "$($u.FullName)\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --exclude "*.lnk" --drive-chunk-size 64M 2>$null
+              Get-ChildItem -Path "C:\Users" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                if ($_.Name -ne "Default" -and $_.Name -ne "All Users") {
+                  $uPath =$_.FullName
+                  if (Test-Path "$uPath\Desktop") {
+                    & C:\rclone\rclone.exe --config $globalConf copy "$uPath\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --exclude "*.lnk" --drive-chunk-size 64M 2>$null
                   }
                 }
               }
@@ -190,11 +189,11 @@ jobs:
           Write-Host "Executing Final State Commit to Google Drive..." -ForegroundColor Cyan
           $globalConf = "C:\rclone\rclone.conf"
 
-          $userDirs = Get-ChildItem -Path "C:\Users" -Directory -ErrorAction SilentlyContinue
-          foreach ($u in$userDirs) {
-            if ($u.Name -ne "Default" -and $u.Name -ne "All Users") {
-              if (Test-Path "$($u.FullName)\Desktop") {
-                & C:\rclone\rclone.exe --config $globalConf copy "$($u.FullName)\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --exclude "*.lnk" --drive-chunk-size 64M 2>$null
+          Get-ChildItem -Path "C:\Users" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_.Name -ne "Default" -and $_.Name -ne "All Users") {
+              $uPath =$_.FullName
+              if (Test-Path "$uPath\Desktop") {
+                & C:\rclone\rclone.exe --config $globalConf copy "$uPath\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --exclude "*.lnk" --drive-chunk-size 64M 2>$null
               }
             }
           }
