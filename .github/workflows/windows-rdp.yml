@@ -20,7 +20,7 @@ jobs:
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
 
-      # ۲. ساخت کاربر
+      # ۲. ساخت کاربر و تنظیم دسترسی کامل
       - name: 2. Setup Local User
         run: |
           $Password = ConvertTo-SecureString "Cynet@2026" -AsPlainText -Force
@@ -29,8 +29,9 @@ jobs:
           net user runneradmin Cynet@2026
 
           New-Item -ItemType Directory -Path "C:\MyFiles" -Force | Out-Null
+          icacls "C:\Users\Public\Desktop" /grant "Everyone:(OI)(CI)F" /T /Q | Out-Null
 
-      # ۳. دانلود و راه‌اندازی Rclone در مسیر عمومی C:\rclone (دسترسی همگانی)
+      # ۳. دانلود و راه‌اندازی Rclone با کانفیگ عمومی
       - name: 3. Initialize Global Google Drive Storage
         env:
           RCLONE_CONF_B64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
@@ -40,19 +41,17 @@ jobs:
           $rcloneDir = Get-ChildItem "C:\rclone_temp" | Where-Object { $_.PSIsContainer } | Select-Object -First 1
           Move-Item -Path $rcloneDir.FullName -Destination "C:\rclone"
 
-          # قرار دادن فایل کانفیگ در مسیر ریشه و عمومی C:\rclone\rclone.conf
           $globalConf = "C:\rclone\rclone.conf"
           New-Item -ItemType File -Path $globalConf -Force | Out-Null
           [System.IO.File]::WriteAllBytes($globalConf, [System.Convert]::FromBase64String($env:RCLONE_CONF_B64))
 
-          # ثبت متغیر محیطی سیستمی تا هر کاربری rclone را زد، کانفیگ را بشناسد
           [System.Environment]::SetEnvironmentVariable("RCLONE_CONFIG", $globalConf, "Machine")
           $env:RCLONE_CONFIG = $globalConf
 
           Write-Host "Verifying Google Drive connection..." -ForegroundColor Cyan
           & C:\rclone\rclone.exe --config $globalConf about gdrive:
 
-      # ۴. ایجاد فایل ذخیره سریع در دسکتاپ عمومی با آدرس مستقیم کانفیگ
+      # ۴. ساخت دکمه ذخیره هوشمند روی دسکتاپ
       - name: 4. Setup Desktop Save Shortcut
         run: |
           $saveScript = @"
@@ -61,7 +60,8 @@ jobs:
           echo ===================================================
           echo   Backing up Desktop and Files to Google Drive...
           echo ===================================================
-          C:\rclone\rclone.exe --config "C:\rclone\rclone.conf" copy "%USERPROFILE%\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --drive-chunk-size 64M
+          C:\rclone\rclone.exe --config "C:\rclone\rclone.conf" copy "%USERPROFILE%\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --exclude "*.lnk" --drive-chunk-size 64M
+          C:\rclone\rclone.exe --config "C:\rclone\rclone.conf" copy "C:\Users\Public\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --exclude "*.lnk" --drive-chunk-size 64M
           C:\rclone\rclone.exe --config "C:\rclone\rclone.conf" copy "%USERPROFILE%\Documents" "gdrive:RDP_State/Documents" --drive-chunk-size 64M
           C:\rclone\rclone.exe --config "C:\rclone\rclone.conf" copy "%USERPROFILE%\Downloads" "gdrive:RDP_State/Downloads" --drive-chunk-size 64M
           C:\rclone\rclone.exe --config "C:\rclone\rclone.conf" copy "C:\MyFiles" "gdrive:RDP_State/MyFiles" --drive-chunk-size 64M
@@ -72,31 +72,31 @@ jobs:
           "@
           Set-Content -Path "C:\Users\Public\Desktop\SAVE-NOW.bat" -Value $saveScript
 
-      # ۵. بازیابی فایل‌ها از گوگل درایو
-      - name: 5. Restore Full User State
+      # ۵. بازیابی مستقیم فایل‌ها به Public Desktop (نمایش تضمینی برای هر دو کاربر)
+      - name: 5. Restore Full User State to Screen
         run: |
           $ErrorActionPreference = "Continue"
           $globalConf = "C:\rclone\rclone.conf"
-          Write-Host "Checking for existing files in Google Drive..." -ForegroundColor Cyan
+          Write-Host "Restoring files directly to screen..." -ForegroundColor Cyan
 
+          # تضمین ایجاد پوشه‌های ریموت در گوگل درایو
           & C:\rclone\rclone.exe --config $globalConf mkdir "gdrive:RDP_State/Desktop" 2>$null
           & C:\rclone\rclone.exe --config $globalConf mkdir "gdrive:RDP_State/Documents" 2>$null
           & C:\rclone\rclone.exe --config $globalConf mkdir "gdrive:RDP_State/Downloads" 2>$null
           & C:\rclone\rclone.exe --config $globalConf mkdir "gdrive:RDP_State/MyFiles" 2>$null
-          $LASTEXITCODE = 0
 
-          # دانلود روی تمام پروفایل‌های موجود
-          $userDirs = Get-ChildItem "C:\Users" -Directory | Where-Object { $_.Name -notmatch "Public|Default|All Users" }
-          foreach ($u in $userDirs) {
-            New-Item -ItemType Directory -Path "$($u.FullName)\Desktop" -Force | Out-Null
-            & C:\rclone\rclone.exe --config $globalConf copy "gdrive:RDP_State/Desktop" "$($u.FullName)\Desktop" --transfers 8 --drive-chunk-size 64M 2>$null
-            & C:\rclone\rclone.exe --config $globalConf copy "gdrive:RDP_State/Documents" "$($u.FullName)\Documents" --transfers 8 --drive-chunk-size 64M 2>$null
-            & C:\rclone\rclone.exe --config $globalConf copy "gdrive:RDP_State/Downloads" "$($u.FullName)\Downloads" --transfers 8 --drive-chunk-size 64M 2>$null
-          }
+          # ریختن مستقیم فایل‌ها در Public Desktop و Default Desktop تا برای هر کاربری روی مانیتور بیاید
+          & C:\rclone\rclone.exe --config $globalConf copy "gdrive:RDP_State/Desktop" "C:\Users\Public\Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --transfers 8 --drive-chunk-size 64M 2>$null
+          & C:\rclone\rclone.exe --config $globalConf copy "gdrive:RDP_State/Desktop" "C:\Users\Default\Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --transfers 8 --drive-chunk-size 64M 2>$null
+          & C:\rclone\rclone.exe --config $globalConf copy "gdrive:RDP_State/Desktop" "C:\Users\runneradmin\Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --transfers 8 --drive-chunk-size 64M 2>$null
+
+          & C:\rclone\rclone.exe --config $globalConf copy "gdrive:RDP_State/Documents" "C:\Users\Public\Documents" --transfers 8 --drive-chunk-size 64M 2>$null
+          & C:\rclone\rclone.exe --config $globalConf copy "gdrive:RDP_State/Downloads" "C:\Users\Public\Downloads" --transfers 8 --drive-chunk-size 64M 2>$null
           & C:\rclone\rclone.exe --config $globalConf copy "gdrive:RDP_State/MyFiles" "C:\MyFiles" --transfers 8 --drive-chunk-size 64M 2>$null
 
           $LASTEXITCODE = 0
-          Write-Host "Restoration step completed." -ForegroundColor Green
+          Write-Host "Restoration completed. Files on Public Desktop:" -ForegroundColor Green
+          Get-ChildItem "C:\Users\Public\Desktop" | Select-Object Name, Length
 
       # ۶. راه‌اندازی تونل ثابت Bore + تیل‌اسکیل (اختیاری)
       - name: 6. Connect Permanent Bore Tunnel & Tailscale
@@ -125,7 +125,7 @@ jobs:
           Write-Host "  👉 Password      : Cynet@2026" -ForegroundColor Yellow
           Write-Host "=================================================================" -ForegroundColor Green
 
-      # ۷. همگام‌سازی خودکار هر ۳ دقیقه
+      # ۷. همگام‌سازی خودکار در پس‌زمینه (هر ۳ دقیقه)
       - name: 7. Keep Alive & Periodic Background Sync (350 Minutes)
         run: |
           $globalConf = "C:\rclone\rclone.conf"
@@ -138,10 +138,10 @@ jobs:
             if ($i % $syncMinutes -eq 0) {
               Write-Host "[$i/$totalMinutes] Auto-syncing files to Google Drive..." -ForegroundColor Magenta
 
-              $userDirs = Get-ChildItem "C:\Users" -Directory | Where-Object { $_.Name -notmatch "Public|Default|All Users" }
+              $userDirs = Get-ChildItem "C:\Users" -Directory | Where-Object { $_.Name -notmatch "Default|All Users" }
               foreach ($u in $userDirs) {
                 if (Test-Path "$($u.FullName)\Desktop") {
-                  & C:\rclone\rclone.exe --config $globalConf copy "$($u.FullName)\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --drive-chunk-size 64M 2>$null
+                  & C:\rclone\rclone.exe --config $globalConf copy "$($u.FullName)\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --exclude "*.lnk" --drive-chunk-size 64M 2>$null
                 }
                 if (Test-Path "$($u.FullName)\Documents") {
                   & C:\rclone\rclone.exe --config $globalConf copy "$($u.FullName)\Documents" "gdrive:RDP_State/Documents" --drive-chunk-size 64M 2>$null
@@ -157,17 +157,17 @@ jobs:
             }
           }
 
-      # ۸. بکاپ نهایی در لحظه لغو یا خاموشی
+      # ۸. بکاپ نهایی در لحظه لغو دستی یا خاموشی
       - name: 8. Final State Backup to Google Drive
         if: always()
         run: |
           Write-Host "Executing Final State Commit to Google Drive..." -ForegroundColor Cyan
           $globalConf = "C:\rclone\rclone.conf"
 
-          $userDirs = Get-ChildItem "C:\Users" -Directory | Where-Object { $_.Name -notmatch "Public|Default|All Users" }
+          $userDirs = Get-ChildItem "C:\Users" -Directory | Where-Object { $_.Name -notmatch "Default|All Users" }
           foreach ($u in $userDirs) {
             if (Test-Path "$($u.FullName)\Desktop") {
-              & C:\rclone\rclone.exe --config $globalConf copy "$($u.FullName)\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --drive-chunk-size 64M 2>$null
+              & C:\rclone\rclone.exe --config $globalConf copy "$($u.FullName)\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --exclude "*.lnk" --drive-chunk-size 64M 2>$null
             }
             if (Test-Path "$($u.FullName)\Documents") {
               & C:\rclone\rclone.exe --config $globalConf copy "$($u.FullName)\Documents" "gdrive:RDP_State/Documents" --drive-chunk-size 64M 2>$null
@@ -189,7 +189,7 @@ jobs:
             try { & "C:\Program Files\Tailscale\tailscale.exe" logout } catch {}
           }
 
-      # ۱۰. راه‌اندازی مجدد سشن بعدی
+      # ۱۰. اجرای خودکار سشن بعدی
       - name: 10. Trigger Next Run (Auto-Restart)
         if: success() || failure()
         env:
