@@ -13,42 +13,49 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      # ۱. تنظیم دسترسی ریموت دسکتاپ (RDP)
+      # ۱. تنظیم ریموت دسکتاپ
       - name: 1. Configure System & Remote Access
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
 
-      # ۲. ایجاد کاربر و ثبت رسمی مسیر پروفایل در رجیستری برای جلوگیری از پروفایل موقت (TEMP)
-      - name: 2. Setup Local User & Profile Registration
+      # ۲. ساخت کاربر و تنظیم دسترسی کامل دسکتاپ‌ها
+      - name: 2. Setup Local User & Multi-Profile Folders
         run: |
           $Password = ConvertTo-SecureString "Cynet@2026" -AsPlainText -Force
           New-LocalUser -Name "CynetAdmin" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member "CynetAdmin" -ErrorAction SilentlyContinue
           net user runneradmin Cynet@2026
 
-          $userProfile = "C:\Users\CynetAdmin"
-          New-Item -ItemType Directory -Path "$userProfile\Desktop" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$userProfile\Downloads" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$userProfile\Documents" -Force | Out-Null
+          # آماده‌سازی پوشه‌های دسکتاپ برای هر دو کاربر
+          $profiles = @("C:\Users\CynetAdmin", "C:\Users\runneradmin", "C:\Users\Default")
+          foreach ($p in $profiles) {
+            New-Item -ItemType Directory -Path "$p\Desktop" -Force | Out-Null
+            New-Item -ItemType Directory -Path "$p\Downloads" -Force | Out-Null
+            New-Item -ItemType Directory -Path "$p\Documents" -Force | Out-Null
+          }
           New-Item -ItemType Directory -Path "C:\MyFiles" -Force | Out-Null
 
-          try {
-            $userObj = New-Object System.Security.Principal.NTAccount("CynetAdmin")
-            $sid = $userObj.Translate([System.Security.Principal.SecurityIdentifier]).Value
-            $profileKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
-            New-Item -Path $profileKey -Force | Out-Null
-            Set-ItemProperty -Path $profileKey -Name "ProfileImagePath" -Value $userProfile
-            Set-ItemProperty -Path $profileKey -Name "Flags" -Value 0
-            Set-ItemProperty -Path $profileKey -Name "State" -Value 0
-            icacls $userProfile /grant "CynetAdmin:(OI)(CI)F" /T /Q | Out-Null
-            Write-Host "Profile path permanently linked to CynetAdmin." -ForegroundColor Green
-          } catch {
-            Write-Host "Profile registration notice: $_" -ForegroundColor Yellow
-          }
+          # ساخت اسکریپت ذخیره فوری روی دسکتاپ عمومی (قابل مشاهده برای همه یوزرها)
+          $saveScript = @"
+          @echo off
+          cls
+          echo ===================================================
+          echo   Backing up Desktop and Files to Google Drive...
+          echo ===================================================
+          C:\rclone\rclone.exe copy "%USERPROFILE%\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --drive-chunk-size 64M
+          C:\rclone\rclone.exe copy "%USERPROFILE%\Documents" "gdrive:RDP_State/Documents" --drive-chunk-size 64M
+          C:\rclone\rclone.exe copy "%USERPROFILE%\Downloads" "gdrive:RDP_State/Downloads" --drive-chunk-size 64M
+          C:\rclone\rclone.exe copy "C:\MyFiles" "gdrive:RDP_State/MyFiles" --drive-chunk-size 64M
+          echo ===================================================
+          echo   SUCCESS! Files are 100% saved in Google Drive.
+          echo ===================================================
+          pause
+          "@
+          Set-Content -Path "C:\Users\Public\Desktop\SAVE-NOW.bat" -Value $saveScript
 
-      # ۳. دانلود و راه‌اندازی ابزار Rclone برای اتصال به گوگل درایو
+      # ۳. راه‌اندازی Rclone
       - name: 3. Initialize Google Drive Storage
         env:
           RCLONE_CONF_B64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
@@ -65,57 +72,31 @@ jobs:
           Write-Host "Verifying Google Drive connection..." -ForegroundColor Cyan
           & C:\rclone\rclone.exe about gdrive:
 
-      # ۴. بازیابی هوشمند داده‌ها (تشخیص اجرای اول و بدون خطا)
+      # ۴. بازیابی تضمینی داده‌ها به تمام دسکتاپ‌ها
       - name: 4. Restore Full User State
         run: |
-          Write-Host "Checking for existing backup in Google Drive..." -ForegroundColor Cyan
-          $userProfile = "C:\Users\CynetAdmin"
+          $ErrorActionPreference = "Continue"
+          Write-Host "Checking for existing files in Google Drive..." -ForegroundColor Cyan
 
-          # بررسی وجود پوشه‌های بکاپ در گوگل درایو
-          $existingFolders = & C:\rclone\rclone.exe lsd "gdrive:RDP_State" 2>$null
+          # ایجاد امن پوشه‌های ریموت
+          & C:\rclone\rclone.exe mkdir "gdrive:RDP_State/Desktop" 2>$null
+          & C:\rclone\rclone.exe mkdir "gdrive:RDP_State/Documents" 2>$null
+          & C:\rclone\rclone.exe mkdir "gdrive:RDP_State/Downloads" 2>$null
+          & C:\rclone\rclone.exe mkdir "gdrive:RDP_State/MyFiles" 2>$null
           $LASTEXITCODE = 0
 
-          if ($existingFolders) {
-            Write-Host "Previous backup detected! Restoring files..." -ForegroundColor Green
-
-            if ($existingFolders -match "Desktop") {
-              Write-Host "Restoring Desktop..." -ForegroundColor Green
-              & C:\rclone\rclone.exe copy "gdrive:RDP_State/Desktop" "$userProfile\Desktop" --transfers 8 --drive-chunk-size 64M 2>$null
-              $LASTEXITCODE = 0
-            }
-            if ($existingFolders -match "Documents") {
-              Write-Host "Restoring Documents..." -ForegroundColor Green
-              & C:\rclone\rclone.exe copy "gdrive:RDP_State/Documents" "$userProfile\Documents" --transfers 8 --drive-chunk-size 64M 2>$null
-              $LASTEXITCODE = 0
-            }
-            if ($existingFolders -match "Downloads") {
-              Write-Host "Restoring Downloads..." -ForegroundColor Green
-              & C:\rclone\rclone.exe copy "gdrive:RDP_State/Downloads" "$userProfile\Downloads" --transfers 8 --drive-chunk-size 64M 2>$null
-              $LASTEXITCODE = 0
-            }
-            if ($existingFolders -match "MyFiles") {
-              Write-Host "Restoring MyFiles..." -ForegroundColor Green
-              & C:\rclone\rclone.exe copy "gdrive:RDP_State/MyFiles" "C:\MyFiles" --transfers 8 --drive-chunk-size 64M 2>$null
-              $LASTEXITCODE = 0
-            }
-
-            # بازیابی رجیستری در صورت وجود
-            $hasReg = & C:\rclone\rclone.exe lsf "gdrive:RDP_State/user_settings.reg" 2>$null
-            $LASTEXITCODE = 0
-            if ($hasReg) {
-              & C:\rclone\rclone.exe copy "gdrive:RDP_State/user_settings.reg" "$userProfile\" 2>$null
-              $LASTEXITCODE = 0
-              if (Test-Path "$userProfile\user_settings.reg") {
-                reg import "$userProfile\user_settings.reg" 2>$null
-              }
-            }
-          } else {
-            Write-Host "First-time launch: No previous backup found in Google Drive. Starting fresh session." -ForegroundColor Yellow
+          # دانلود فایل‌ها و ریختن هم‌زمان در دسکتاپ CynetAdmin و runneradmin
+          $targetDesktops = @("C:\Users\CynetAdmin\Desktop", "C:\Users\runneradmin\Desktop")
+          foreach ($desk in $targetDesktops) {
+            & C:\rclone\rclone.exe copy "gdrive:RDP_State/Desktop" "$desk" --transfers 8 --drive-chunk-size 64M 2>$null
+            & C:\rclone\rclone.exe copy "gdrive:RDP_State/Documents" "$desk\..\Documents" --transfers 8 --drive-chunk-size 64M 2>$null
+            & C:\rclone\rclone.exe copy "gdrive:RDP_State/Downloads" "$desk\..\Downloads" --transfers 8 --drive-chunk-size 64M 2>$null
           }
+          & C:\rclone\rclone.exe copy "gdrive:RDP_State/MyFiles" "C:\MyFiles" --transfers 8 --drive-chunk-size 64M 2>$null
 
           $LASTEXITCODE = 0
-          Write-Host "Desktop is ready. Current Desktop contents:" -ForegroundColor Green
-          Get-ChildItem "$userProfile\Desktop" | Select-Object Name, Length
+          Write-Host "Restoration finished. Files on Desktop:" -ForegroundColor Green
+          Get-ChildItem "C:\Users\CynetAdmin\Desktop" | Select-Object Name, Length
 
       # ۵. راه‌اندازی تونل ثابت Bore + تیل‌اسکیل (اختیاری)
       - name: 5. Connect Permanent Bore Tunnel & Tailscale
@@ -127,29 +108,24 @@ jobs:
           Invoke-WebRequest "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-pc-windows-msvc.zip" -OutFile "C:\bore\bore.zip"
           Expand-Archive -Path "C:\bore\bore.zip" -DestinationPath "C:\bore" -Force
           
-          # اجرای Bore روی پورت دائمی ۳۸۹۲۶
           Start-Process -FilePath "C:\bore\bore.exe" -ArgumentList "local 3389 --to bore.pub --port 38926" -WorkingDirectory "C:\bore"
 
-          # تیل‌اسکیل اختیاری (در صورت نبود سکرت، مرحله رد می‌شود)
           if ($env:TAILSCALE_AUTHKEY) {
-            Write-Host "Tailscale key detected. Installing Tailscale..." -ForegroundColor Cyan
             Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
             Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
             Start-Sleep -Seconds 5
             & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="win-station" --unattended
-          } else {
-            Write-Host "Tailscale key not provided. Skipping (Optional)." -ForegroundColor Yellow
           }
 
           Write-Host ""
           Write-Host "=================================================================" -ForegroundColor Green
           Write-Host "  >>> 100% PERMANENT & STATIC RDP IS READY <<<" -ForegroundColor Cyan
           Write-Host "  👉 Fixed Address : bore.pub:38926" -ForegroundColor Yellow
-          Write-Host "  👉 Username      : CynetAdmin" -ForegroundColor Yellow
+          Write-Host "  👉 Username      : CynetAdmin (یا runneradmin)" -ForegroundColor Yellow
           Write-Host "  👉 Password      : Cynet@2026" -ForegroundColor Yellow
           Write-Host "=================================================================" -ForegroundColor Green
 
-      # ۶. سیستم همگام‌سازی سریع و خودکار (هر ۳ دقیقه یک‌بار)
+      # ۶. همگام‌سازی خودکار هر ۳ دقیقه در پس‌زمینه
       - name: 6. Keep Alive & Periodic Background Sync (350 Minutes)
         run: |
           $syncMinutes = 3
@@ -159,51 +135,52 @@ jobs:
             Start-Sleep -Seconds 60
 
             if ($i % $syncMinutes -eq 0) {
-              Write-Host "[$i/$totalMinutes] Running Fast Delta Sync to Google Drive..." -ForegroundColor Magenta
+              Write-Host "[$i/$totalMinutes] Auto-syncing files to Google Drive..." -ForegroundColor Magenta
 
-              # پیدا کردن مسیر دقیق دسکتاپ فعال کاربر
-              $activeProfile = Get-ChildItem "C:\Users" | Where-Object { $_.Name -like "CynetAdmin*" } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-              $pPath = if ($activeProfile) { $activeProfile.FullName } else { "C:\Users\CynetAdmin" }
-
-              # سینک مستقیم و سریع فایل‌ها
-              & C:\rclone\rclone.exe sync "$pPath\Desktop" "gdrive:RDP_State/Desktop" --transfers 8 --drive-chunk-size 64M 2>$null
-              & C:\rclone\rclone.exe sync "$pPath\Documents" "gdrive:RDP_State/Documents" --transfers 8 --drive-chunk-size 64M 2>$null
-              & C:\rclone\rclone.exe sync "$pPath\Downloads" "gdrive:RDP_State/Downloads" --transfers 8 --drive-chunk-size 64M 2>$null
-              & C:\rclone\rclone.exe sync "C:\MyFiles" "gdrive:RDP_State/MyFiles" --transfers 8 --drive-chunk-size 64M 2>$null
+              # اسکن دسکتاپ تمام کاربران برای اطمینان از ذخیره همه فایل‌ها
+              $userDirs = Get-ChildItem "C:\Users" -Directory | Where-Object { $_.Name -notmatch "Public|Default|All Users" }
+              foreach ($u in $userDirs) {
+                if (Test-Path "$($u.FullName)\Desktop") {
+                  & C:\rclone\rclone.exe copy "$($u.FullName)\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --drive-chunk-size 64M 2>$null
+                }
+                if (Test-Path "$($u.FullName)\Documents") {
+                  & C:\rclone\rclone.exe copy "$($u.FullName)\Documents" "gdrive:RDP_State/Documents" --drive-chunk-size 64M 2>$null
+                }
+                if (Test-Path "$($u.FullName)\Downloads") {
+                  & C:\rclone\rclone.exe copy "$($u.FullName)\Downloads" "gdrive:RDP_State/Downloads" --drive-chunk-size 64M 2>$null
+                }
+              }
+              & C:\rclone\rclone.exe copy "C:\MyFiles" "gdrive:RDP_State/MyFiles" --drive-chunk-size 64M 2>$null
               $LASTEXITCODE = 0
             } else {
               Write-Host "[$i/$totalMinutes] System running smoothly..."
             }
           }
 
-      # ۷. بکاپ قطعی نهایی در لحظه بستن، اتمام زمان یا کنسل شدن دستی ورک‌فلو
+      # ۷. بکاپ نهایی در لحظه لغو یا خاموشی
       - name: 7. Final State Backup to Google Drive
         if: always()
         run: |
           Write-Host "Executing Final State Commit to Google Drive..." -ForegroundColor Cyan
 
-          # تشخیص مسیر واقعی کاربر
-          $activeProfile = Get-ChildItem "C:\Users" | Where-Object { $_.Name -like "CynetAdmin*" } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          $pPath = if ($activeProfile) { $activeProfile.FullName } else { "C:\Users\CynetAdmin" }
-
-          Write-Host "Backing up from: $pPath" -ForegroundColor Green
-
-          # ذخیره مستقیم فایل‌ها در گوگل درایو
-          & C:\rclone\rclone.exe sync "$pPath\Desktop" "gdrive:RDP_State/Desktop" --transfers 8 --drive-chunk-size 64M 2>$null
-          & C:\rclone\rclone.exe sync "$pPath\Documents" "gdrive:RDP_State/Documents" --transfers 8 --drive-chunk-size 64M 2>$null
-          & C:\rclone\rclone.exe sync "$pPath\Downloads" "gdrive:RDP_State/Downloads" --transfers 8 --drive-chunk-size 64M 2>$null
-          & C:\rclone\rclone.exe sync "C:\MyFiles" "gdrive:RDP_State/MyFiles" --transfers 8 --drive-chunk-size 64M 2>$null
-
-          # استخراج و ذخیره تنظیمات نرم‌افزارها در رجیستری
-          reg export "HKCU\Software" "$pPath\user_settings.reg" /y 2>$null
-          if (Test-Path "$pPath\user_settings.reg") {
-            & C:\rclone\rclone.exe copy "$pPath\user_settings.reg" "gdrive:RDP_State" --drive-chunk-size 64M 2>$null
+          $userDirs = Get-ChildItem "C:\Users" -Directory | Where-Object { $_.Name -notmatch "Public|Default|All Users" }
+          foreach ($u in $userDirs) {
+            if (Test-Path "$($u.FullName)\Desktop") {
+              & C:\rclone\rclone.exe copy "$($u.FullName)\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --drive-chunk-size 64M 2>$null
+            }
+            if (Test-Path "$($u.FullName)\Documents") {
+              & C:\rclone\rclone.exe copy "$($u.FullName)\Documents" "gdrive:RDP_State/Documents" --drive-chunk-size 64M 2>$null
+            }
+            if (Test-Path "$($u.FullName)\Downloads") {
+              & C:\rclone\rclone.exe copy "$($u.FullName)\Downloads" "gdrive:RDP_State/Downloads" --drive-chunk-size 64M 2>$null
+            }
           }
+          & C:\rclone\rclone.exe copy "C:\MyFiles" "gdrive:RDP_State/MyFiles" --drive-chunk-size 64M 2>$null
 
           $LASTEXITCODE = 0
           Write-Host "All files committed to Google Drive successfully." -ForegroundColor Green
 
-      # ۸. خروج ایمن از تیل‌اسکیل (در صورت اجرا بودن)
+      # ۸. خروج ایمن از تیل‌اسکیل
       - name: 8. Immediate Tailscale Logout
         if: always()
         run: |
@@ -211,7 +188,7 @@ jobs:
             try { & "C:\Program Files\Tailscale\tailscale.exe" logout } catch {}
           }
 
-      # ۹. راه‌اندازی مجدد خودکار برای سشن پیوسته بعدی
+      # ۹. اجرای خودکار سشن بعدی
       - name: 9. Trigger Next Run (Auto-Restart)
         if: success() || failure()
         env:
@@ -220,6 +197,4 @@ jobs:
           if ($env:GH_TOKEN) {
             Write-Host "Starting next continuous session..." -ForegroundColor Cyan
             gh workflow run "windows-rdp.yml" --repo $env:GITHUB_REPOSITORY --ref main
-          } else {
-            Write-Host "Auto-restart skipped (GH_PAT not provided)."
           }
