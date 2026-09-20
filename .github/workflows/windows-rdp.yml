@@ -33,15 +33,15 @@ jobs:
           icacls "C:\Users\Public\Desktop" /grant "Everyone:(OI)(CI)F" /T /Q | Out-Null
           icacls "C:\AutoRun" /grant "Everyone:(OI)(CI)F" /T /Q | Out-Null
 
-      # ۳. دانلود و راه‌اندازی Rclone با کانفیگ سراسری
+      # ۳. دانلود و راه‌اندازی Rclone (نسخه ساده و بدون کاراکترهای خطاانداز)
       - name: 3. Initialize Global Google Drive Storage
         env:
           RCLONE_CONF_B64: ${{ secrets.RCLONE_CONFIG_BASE64 }}
         run: |
-          Invoke-WebRequest "https://downloads.rclone.org/rclone-current-windows-amd64.zip" -OutFile "C:\rclone.zip"
-          Expand-Archive -Path "C:\rclone.zip" -DestinationPath "C:\rclone_temp"
-          $rcloneDir = Get-ChildItem "C:\rclone_temp" \vert{} Where-Object { $_.PSIsContainer } | Select-Object -First 1
-          Move-Item -Path $rcloneDir.FullName -Destination "C:\rclone"
+          Invoke-WebRequest -Uri "https://downloads.rclone.org/rclone-current-windows-amd64.zip" -OutFile "C:\rclone.zip"
+          Expand-Archive -Path "C:\rclone.zip" -DestinationPath "C:\rclone_temp" -Force
+          $rcloneDir = (Get-ChildItem -Path "C:\rclone_temp" -Directory)[0].FullName
+          Move-Item -Path $rcloneDir -Destination "C:\rclone"
 
           $globalConf = "C:\rclone\rclone.conf"
           New-Item -ItemType File -Path $globalConf -Force | Out-Null
@@ -53,11 +53,10 @@ jobs:
           Write-Host "Verifying Google Drive connection..." -ForegroundColor Cyan
           & C:\rclone\rclone.exe --config $globalConf about gdrive:
 
-      # ۴. ساخت دکمه ذخیره دستی + پوشه هوشمند AutoRun روی دسکتاپ
+      # ۴. ساخت دکمه ذخیره دستی + پوشه هوشمند AutoRun
       - name: 4. Setup Desktop Shortcuts & AutoRun Manager
         run: |
-          # ۱. دکمه ذخیره فوری
-          $saveScript = @"
+          $saveScript = @'
           @echo off
           cls
           echo ===================================================
@@ -70,30 +69,27 @@ jobs:
           C:\rclone\rclone.exe --config "C:\rclone\rclone.conf" copy "%USERPROFILE%\Downloads" "gdrive:RDP_State/Downloads" --drive-chunk-size 64M
           C:\rclone\rclone.exe --config "C:\rclone\rclone.conf" copy "C:\MyFiles" "gdrive:RDP_State/MyFiles" --drive-chunk-size 64M
           echo ===================================================
-          echo   SUCCESS! Files are 100%% saved in Google Drive.
+          echo   SUCCESS! Files are 100% saved in Google Drive.
           echo ===================================================
           pause
-          "@
+          '@
           Set-Content -Path "C:\Users\Public\Desktop\SAVE-NOW.bat" -Value $saveScript
 
-          # ۲. ساخت فایل راهنما و استارتر پیش‌فرض در AutoRun
-          $defaultActivity = @"
+          $defaultActivity = @'
           @echo off
-          :: دستورات یا اسکریپت هایی که می خواهید بعد از ریستارت به صورت خودکار اجرا شوند را اینجا بنویسید
           echo Auto-Resume is active! Running tasks... >> C:\AutoRun\activity.log
           echo Start time: %date% %time% >> C:\AutoRun\activity.log
-          "@
+          '@
           if (-not (Test-Path "C:\AutoRun\run_activity.bat")) {
             Set-Content -Path "C:\AutoRun\run_activity.bat" -Value $defaultActivity
           }
 
-          # میانبر دسترسی سریع به AutoRun روی دسکتاپ عمومی
           $WshShell = New-Object -ComObject WScript.Shell
           $Shortcut =$WshShell.CreateShortcut("C:\Users\Public\Desktop\AutoRun_Folder.lnk")
           $Shortcut.TargetPath = "C:\AutoRun"
           $Shortcut.Save()
 
-      # ۵. بازیابی فایل‌ها از گوگل درایو
+      # ۵. بازیابی فایل‌ها از گوگل درایو به دسکتاپ عمومی
       - name: 5. Restore Full User State to Screen
         run: |
           $ErrorActionPreference = "Continue"
@@ -106,7 +102,6 @@ jobs:
           & C:\rclone\rclone.exe --config $globalConf mkdir "gdrive:RDP_State/Downloads" 2>$null
           & C:\rclone\rclone.exe --config $globalConf mkdir "gdrive:RDP_State/MyFiles" 2>$null
 
-          # دانلود فایل‌های دسکتاپ و AutoRun
           & C:\rclone\rclone.exe --config $globalConf copy "gdrive:RDP_State/Desktop" "C:\Users\Public\Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --exclude "*.lnk" --transfers 8 --drive-chunk-size 64M 2>$null
           & C:\rclone\rclone.exe --config $globalConf copy "gdrive:RDP_State/Desktop" "C:\Users\Default\Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --exclude "*.lnk" --transfers 8 --drive-chunk-size 64M 2>$null
           & C:\rclone\rclone.exe --config $globalConf copy "gdrive:RDP_State/AutoRun" "C:\AutoRun" --transfers 8 --drive-chunk-size 64M 2>$null
@@ -118,18 +113,16 @@ jobs:
           $LASTEXITCODE = 0
           Write-Host "Restoration completed." -ForegroundColor Green
 
-      # ۶. اجرای خودکار فعالیت‌ها و برنامه‌ها بلافاصله پس از بازیابی (Auto-Resume Execution)
+      # ۶. اجرای خودکار فعالیت‌ها و برنامه‌ها بلافاصله پس از بازیابی
       - name: 6. Trigger Auto-Resume Activities
         run: |
           Write-Host "Checking for persistent activities in AutoRun..." -ForegroundColor Cyan
           if (Test-Path "C:\AutoRun\run_activity.bat") {
-            Write-Host "Found run_activity.bat! Launching persistent task in background..." -ForegroundColor Green
-            # اجرای اسکریپت در پس‌زمینه با لاگ‌گیری مداوم
+            Write-Host "Found run_activity.bat! Launching task..." -ForegroundColor Green
             Start-Process -FilePath "cmd.exe" -ArgumentList "/c C:\AutoRun\run_activity.bat >> C:\AutoRun\activity.log 2>&1" -WorkingDirectory "C:\AutoRun"
           }
 
-          # اجرای هرگونه اسکریپت پایتون داخل پوشه AutoRun
-          $pythonScripts = Get-ChildItem "C:\AutoRun" -Filter "*.py" -ErrorAction SilentlyContinue
+          $pythonScripts = Get-ChildItem -Path "C:\AutoRun" -Filter "*.py" -ErrorAction SilentlyContinue
           foreach ($script in$pythonScripts) {
             Write-Host "Starting Python task: $($script.Name)" -ForegroundColor Green
             Start-Process -FilePath "python.exe" -ArgumentList "`"$($script.FullName)`"" -WorkingDirectory "C:\AutoRun"
@@ -142,13 +135,13 @@ jobs:
         run: |
           Write-Host "Setting up Permanent Bore Tunnel..." -ForegroundColor Cyan
           New-Item -ItemType Directory -Path "C:\bore" -Force | Out-Null
-          Invoke-WebRequest "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-pc-windows-msvc.zip" -OutFile "C:\bore\bore.zip"
+          Invoke-WebRequest -Uri "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-pc-windows-msvc.zip" -OutFile "C:\bore\bore.zip"
           Expand-Archive -Path "C:\bore\bore.zip" -DestinationPath "C:\bore" -Force
           
           Start-Process -FilePath "C:\bore\bore.exe" -ArgumentList "local 3389 --to bore.pub --port 38926" -WorkingDirectory "C:\bore"
 
           if ($env:TAILSCALE_AUTHKEY) {
-            Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
+            Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
             Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
             Start-Sleep -Seconds 5
             & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="win-station" --unattended
@@ -163,7 +156,7 @@ jobs:
           Write-Host "  👉 Auto-Resume   : Active (C:\AutoRun)" -ForegroundColor Cyan
           Write-Host "=================================================================" -ForegroundColor Green
 
-      # ۸. همگام‌سازی دوره‌ای فایل‌ها و پوشه فعالیت‌ها (هر ۳ دقیقه)
+      # ۸. همگام‌سازی دوره‌ای در پس‌زمینه (هر ۳ دقیقه)
       - name: 8. Keep Alive & Periodic Background Sync (350 Minutes)
         run: |
           $globalConf = "C:\rclone\rclone.conf"
@@ -175,10 +168,12 @@ jobs:
             if ($i \%$syncMinutes -eq 0) {
               Write-Host "[$i/$totalMinutes] Auto-syncing files and tasks to Google Drive..." -ForegroundColor Magenta
 
-              $userDirs = Get-ChildItem "C:\Users" -Directory \vert{} Where-Object { $_.Name -notmatch "Default|All Users" }
+              $userDirs = Get-ChildItem -Path "C:\Users" -Directory -ErrorAction SilentlyContinue
               foreach ($u in$userDirs) {
-                if (Test-Path "$($u.FullName)\Desktop") {
-                  & C:\rclone\rclone.exe --config $globalConf copy "$($u.FullName)\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --exclude "*.lnk" --drive-chunk-size 64M 2>$null
+                if ($u.Name -ne "Default" -and $u.Name -ne "All Users") {
+                  if (Test-Path "$($u.FullName)\Desktop") {
+                    & C:\rclone\rclone.exe --config $globalConf copy "$($u.FullName)\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --exclude "*.lnk" --drive-chunk-size 64M 2>$null
+                  }
                 }
               }
               & C:\rclone\rclone.exe --config $globalConf copy "C:\AutoRun" "gdrive:RDP_State/AutoRun" --drive-chunk-size 64M 2>$null
@@ -195,10 +190,12 @@ jobs:
           Write-Host "Executing Final State Commit to Google Drive..." -ForegroundColor Cyan
           $globalConf = "C:\rclone\rclone.conf"
 
-          $userDirs = Get-ChildItem "C:\Users" -Directory \vert{} Where-Object { $_.Name -notmatch "Default|All Users" }
+          $userDirs = Get-ChildItem -Path "C:\Users" -Directory -ErrorAction SilentlyContinue
           foreach ($u in$userDirs) {
-            if (Test-Path "$($u.FullName)\Desktop") {
-              & C:\rclone\rclone.exe --config $globalConf copy "$($u.FullName)\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --exclude "*.lnk" --drive-chunk-size 64M 2>$null
+            if ($u.Name -ne "Default" -and $u.Name -ne "All Users") {
+              if (Test-Path "$($u.FullName)\Desktop") {
+                & C:\rclone\rclone.exe --config $globalConf copy "$($u.FullName)\Desktop" "gdrive:RDP_State/Desktop" --exclude "SAVE-NOW.bat" --exclude "desktop.ini" --exclude "*.lnk" --drive-chunk-size 64M 2>$null
+              }
             }
           }
           & C:\rclone\rclone.exe --config $globalConf copy "C:\AutoRun" "gdrive:RDP_State/AutoRun" --drive-chunk-size 64M 2>$null
