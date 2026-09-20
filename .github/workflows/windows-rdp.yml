@@ -1,4 +1,4 @@
-name: The New New Windows Build Environment
+name: The New Windows Build Environment
 
 on:
   workflow_dispatch:
@@ -76,7 +76,8 @@ jobs:
           }
           $LASTEXITCODE = 0
 
-      - name: 5. Connect Tailscale Network
+      # مرحله ۵: اتصال تیل‌اسکیل به همراه قابلیت Exit Node
+      - name: 5. Connect Tailscale Network & Enable Exit Node
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
@@ -84,16 +85,22 @@ jobs:
           Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
 
           Start-Sleep -Seconds 5
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="win-station"
+
+          # فعال‌سازی هدایت ترافیک اینترنت در ویندوز
+          Set-NetIPInterface -Forwarding Enabled -ErrorAction SilentlyContinue
+
+          # اتصال تیل‌اسکیل با فعال‌سازی قابلیت خروج اینترنت (Exit Node)
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="win-station" --advertise-exit-node --unattended
 
           Start-Sleep -Seconds 8
           $ts_ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
 
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Green
-          Write-Host "  >>> SEAMLESS RDP IS READY <<<" -ForegroundColor Cyan
+          Write-Host "  >>> SEAMLESS RDP & EXIT NODE IS READY <<<" -ForegroundColor Cyan
           Write-Host "  Tailscale Hostname : win-station" -ForegroundColor Yellow
           Write-Host "  Tailscale IP       : $ts_ip" -ForegroundColor Yellow
+          Write-Host "  Exit Node Status   : Advertised (Ready to Route)" -ForegroundColor Magenta
           Write-Host "  State Syncing      : Active & Continuous" -ForegroundColor Magenta
           Write-Host "==================================================" -ForegroundColor Green
 
@@ -174,3 +181,4 @@ jobs:
         run: |
           Write-Host "Starting next continuous session..." -ForegroundColor Cyan
           gh workflow run "windows-rdp.yml" --repo $env:GITHUB_REPOSITORY --ref main
+          
