@@ -76,8 +76,8 @@ jobs:
           }
           $LASTEXITCODE = 0
 
-      # مرحله ۵: اتصال تیل‌اسکیل به همراه قابلیت Exit Node
-      - name: 5. Connect Tailscale Network & Enable Exit Node
+      # مرحله ۵: اتصال تیل‌اسکیل + فعال‌سازی کامل روتینگ و NAT ویندوز برای Exit Node
+      - name: 5. Connect Tailscale Network & Enable Exit Node with Full NAT
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
@@ -86,10 +86,19 @@ jobs:
 
           Start-Sleep -Seconds 5
 
-          # فعال‌سازی هدایت ترافیک اینترنت در ویندوز
+          # ۱. فعال‌سازی روتینگ IP در رجیستری و سرویس RemoteAccess
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name "IPEnableRouter" -Value 1
+          Set-Service -Name RemoteAccess -StartupType Automatic -ErrorAction SilentlyContinue
+          Start-Service RemoteAccess -ErrorAction SilentlyContinue
+
+          # ۲. فعال‌سازی قابلیت Forwarding روی کارت‌های شبکه
           Set-NetIPInterface -Forwarding Enabled -ErrorAction SilentlyContinue
 
-          # اتصال تیل‌اسکیل با فعال‌سازی قابلیت خروج اینترنت (Exit Node)
+          # ۳. راه‌اندازی شبکه NAT برای ترجمه آدرس‌های تیل‌اسکیل و عبور از فایروال آژور
+          Get-NetNat | Remove-NetNat -Confirm:$false -ErrorAction SilentlyContinue
+          New-NetNat -Name "TailscaleNAT" -InternalIPInterfaceAddressPrefix "100.64.0.0/10" -ErrorAction SilentlyContinue
+
+          # ۴. اتصال تیل‌اسکیل و معرفی به عنوان Exit Node
           & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="win-station" --advertise-exit-node --unattended
 
           Start-Sleep -Seconds 8
@@ -97,10 +106,10 @@ jobs:
 
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Green
-          Write-Host "  >>> SEAMLESS RDP & EXIT NODE IS READY <<<" -ForegroundColor Cyan
+          Write-Host "  >>> SEAMLESS RDP & ROUTED EXIT NODE IS READY <<<" -ForegroundColor Cyan
           Write-Host "  Tailscale Hostname : win-station" -ForegroundColor Yellow
           Write-Host "  Tailscale IP       : $ts_ip" -ForegroundColor Yellow
-          Write-Host "  Exit Node Status   : Advertised (Ready to Route)" -ForegroundColor Magenta
+          Write-Host "  NAT & Forwarding   : Configured (100.64.0.0/10)" -ForegroundColor Magenta
           Write-Host "  State Syncing      : Active & Continuous" -ForegroundColor Magenta
           Write-Host "==================================================" -ForegroundColor Green
 
